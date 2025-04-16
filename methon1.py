@@ -20,6 +20,9 @@ INPUT_FOLDER = "/Users/cui/Documents/GitHub/MIDI-Harmonization-LCZS/soprano_para
 OUTPUT_FOLDER = "/Users/cui/Documents/GitHub/MIDI-Harmonization-LCZS/atb_paragraphs"
 MIDI_OUTPUT_FOLDER = "midi_outputs"
 os.makedirs(MIDI_OUTPUT_FOLDER, exist_ok=True)
+# Folder for predictions (.json) and generated sample MIDI
+PRED_OUTPUT_FOLDER = "OUTPUT"
+os.makedirs(PRED_OUTPUT_FOLDER, exist_ok=True)
 
 ##############################
 # Global Hyperparameters (Reduced settings for limited memory)
@@ -31,8 +34,8 @@ NHEAD = 4                    # Use 4 attention heads instead of 8
 DROPOUT = 0.1
 PAD_TOKEN = 0
 SOS_TOKEN = 128
-INPUT_VOCAB_SIZE = 257
-OUTPUT_VOCAB_SIZE = 257
+INPUT_VOCAB_SIZE = 196
+OUTPUT_VOCAB_SIZE = 196
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 d_model = HIDDEN_SIZE
 
@@ -98,7 +101,8 @@ class TripleEmbedding(nn.Module):
 ##############################
 class TransformerHarmonizer(nn.Module):
     def __init__(self, src_vocab_size, tgt_vocab_size, d_model, nhead,
-                 num_encoder_layers, num_decoder_layers, dropout=DROPOUT):
+                 num_encoder_layers, num_decoder_layers, dropout=DROPOUT,
+                 hold_steps: int = 2):
         super(TransformerHarmonizer, self).__init__()
         self.src_embedding = SourceEmbedding(src_vocab_size, d_model)
         self.tgt_embedding = TripleEmbedding(tgt_vocab_size, d_model)
@@ -110,11 +114,40 @@ class TransformerHarmonizer(nn.Module):
         self.fc_tenor = nn.Linear(d_model, tgt_vocab_size)
         self.fc_bass = nn.Linear(d_model, tgt_vocab_size)
         self.d_model = d_model
+        # Ensure we repeat each harmony token for at least `hold_steps`
+        self.hold_steps = max(1, int(hold_steps))
 
     def generate_square_subsequent_mask(self, sz):
         mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
         mask = mask.float().masked_fill(mask==0, float('-inf')).masked_fill(mask==1, float(0.0))
         return mask
+
+    # ------------------------------------------------------------------
+    # Utility: mask logits so that no generated pitch exceeds soprano
+    # ------------------------------------------------------------------
+    def _mask_high_notes(self, logits: torch.Tensor, soprano_pitch: torch.Tensor) -> torch.Tensor:
+        """
+        Ensures that the model cannot choose a pitch higher than the current
+        soprano pitch.
+ 
+        Args:
+            logits: Tensor of shape [batch, vocab_size] – raw logits for a part.
+            soprano_pitch: Tensor of shape [batch] – MIDI pitches of soprano
+                           for the current time‑step (0 for PAD).
+ 
+        Returns:
+            logits with positions > soprano_pitch set to -inf so their
+            probability becomes zero after softmax.
+        """
+        # Skip masking on padded timesteps (soprano_pitch == 0)
+        valid_mask = soprano_pitch > 0
+        if valid_mask.any():
+            batch, vocab = logits.shape
+            pitch_range = torch.arange(vocab, device=logits.device).expand(batch, -1)
+            soprano_exp = soprano_pitch.unsqueeze(1).expand_as(pitch_range)
+            over_mask = (pitch_range > soprano_exp) & valid_mask.unsqueeze(1)
+            logits = logits.masked_fill(over_mask, float("-inf"))
+        return logits
 
     def forward(self, src, tgt, tgt_mask=None, teacher_forcing_ratio=1.0):
         src_emb = self.src_embedding(src).transpose(0, 1)  # [src_len, batch, d_model]
@@ -138,23 +171,33 @@ class TransformerHarmonizer(nn.Module):
             logits_tenor_list = []
             logits_bass_list = []
             for t in range(trg_len):
-                tgt_emb = self.tgt_embedding(ys).transpose(0,1)  # [current_len, batch, d_model]
+                tgt_emb = self.tgt_embedding(ys).transpose(0,1)
                 current_len = tgt_emb.size(0)
                 current_mask = self.generate_square_subsequent_mask(current_len).to(src.device)
                 out = self.transformer.decoder(tgt_emb, memory, tgt_mask=current_mask).transpose(0,1)
-                last_out = out[:, -1, :]
-                curr_alto = self.fc_alto(last_out)
-                curr_tenor = self.fc_tenor(last_out)
-                curr_bass = self.fc_bass(last_out)
-                logits_alto_list.append(curr_alto.unsqueeze(1))
-                logits_tenor_list.append(curr_tenor.unsqueeze(1))
-                logits_bass_list.append(curr_bass.unsqueeze(1))
+                last_out = out[:, -1, :]  # [batch, d_model]
+
+                # Raw logits for loss computation
+                curr_alto_raw  = self.fc_alto(last_out)
+                curr_tenor_raw = self.fc_tenor(last_out)
+                curr_bass_raw  = self.fc_bass(last_out)
+
+                # Masked copy for *sampling only*
+                soprano_pitch_now = src[:, t].to(curr_alto_raw.device)
+                curr_alto_masked  = self._mask_high_notes(curr_alto_raw.clone(),  soprano_pitch_now)
+                curr_tenor_masked = self._mask_high_notes(curr_tenor_raw.clone(), soprano_pitch_now)
+                curr_bass_masked  = self._mask_high_notes(curr_bass_raw.clone(),  soprano_pitch_now)
+
+                # Append *raw* logits for the loss
+                logits_alto_list.append(curr_alto_raw.unsqueeze(1))
+                logits_tenor_list.append(curr_tenor_raw.unsqueeze(1))
+                logits_bass_list.append(curr_bass_raw.unsqueeze(1))
                 if torch.rand(1).item() < teacher_forcing_ratio:
                     next_input = tgt[:, t:t+1, :]
                 else:
-                    pred_alto = curr_alto.argmax(dim=1, keepdim=True)
-                    pred_tenor = curr_tenor.argmax(dim=1, keepdim=True)
-                    pred_bass = curr_bass.argmax(dim=1, keepdim=True)
+                    pred_alto  = curr_alto_masked.argmax(dim=1, keepdim=True)
+                    pred_tenor = curr_tenor_masked.argmax(dim=1, keepdim=True)
+                    pred_bass  = curr_bass_masked.argmax(dim=1, keepdim=True)
                     next_input = torch.cat([pred_alto, pred_tenor, pred_bass], dim=1).unsqueeze(1)
                 ys = torch.cat([ys, next_input], dim=1)
             alto_logits = torch.cat(logits_alto_list, dim=1)
@@ -162,7 +205,7 @@ class TransformerHarmonizer(nn.Module):
             bass_logits = torch.cat(logits_bass_list, dim=1)
             return alto_logits, tenor_logits, bass_logits
 
-    def sample_decode(self, src, max_len, temperature=1.5, print_debug=False):
+    def sample_decode(self, src, max_len, temperature=0.5, print_debug=False):
         src_emb = self.src_embedding(src).transpose(0,1)
         memory = self.transformer.encoder(src_emb)
         batch_size = src.size(0)
@@ -170,26 +213,44 @@ class TransformerHarmonizer(nn.Module):
         if print_debug:
             print("Initial input (SOS):")
             print(ys)
+        last_generated = ys[:, -1:, :]  # initialize with SOS, shape [batch,1,3]
         for t in range(max_len):
-            tgt_emb = self.tgt_embedding(ys).transpose(0,1)
-            current_len = tgt_emb.size(0)
-            tgt_mask = self.generate_square_subsequent_mask(current_len).to(src.device)
-            out = self.transformer.decoder(tgt_emb, memory, tgt_mask=tgt_mask).transpose(0,1)
-            last_out = out[:, -1, :]  # [batch, d_model]
-            logits_alto = self.fc_alto(last_out)
-            logits_tenor = self.fc_tenor(last_out)
-            logits_bass = self.fc_bass(last_out)
-            prob_alto = torch.softmax(logits_alto / temperature, dim=1)
-            prob_tenor = torch.softmax(logits_tenor / temperature, dim=1)
-            prob_bass = torch.softmax(logits_bass / temperature, dim=1)
-            pred_alto = torch.multinomial(prob_alto, num_samples=1)
-            pred_tenor = torch.multinomial(prob_tenor, num_samples=1)
-            pred_bass = torch.multinomial(prob_bass, num_samples=1)
-            next_token = torch.cat([pred_alto, pred_tenor, pred_bass], dim=1).unsqueeze(1)
+            if t % self.hold_steps == 0:
+                tgt_emb = self.tgt_embedding(ys).transpose(0,1)
+                current_len = tgt_emb.size(0)
+                tgt_mask = self.generate_square_subsequent_mask(current_len).to(src.device)
+                out = self.transformer.decoder(tgt_emb, memory, tgt_mask=tgt_mask).transpose(0,1)
+                last_out = out[:, -1, :]  # [batch, d_model]
+
+                logits_alto  = self.fc_alto(last_out)
+                logits_tenor = self.fc_tenor(last_out)
+                logits_bass  = self.fc_bass(last_out)
+
+                # Mask logits so no harmony note is above the soprano
+                soprano_pitch_now = src[:, t].to(logits_alto.device)
+                logits_alto  = self._mask_high_notes(logits_alto,  soprano_pitch_now)
+                logits_tenor = self._mask_high_notes(logits_tenor, soprano_pitch_now)
+                logits_bass  = self._mask_high_notes(logits_bass,  soprano_pitch_now)
+
+                prob_alto  = torch.softmax(logits_alto  / temperature, dim=1)
+                prob_tenor = torch.softmax(logits_tenor / temperature, dim=1)
+                prob_bass  = torch.softmax(logits_bass  / temperature, dim=1)
+
+                pred_alto  = torch.multinomial(prob_alto,  num_samples=1)
+                pred_tenor = torch.multinomial(prob_tenor, num_samples=1)
+                pred_bass  = torch.multinomial(prob_bass,  num_samples=1)
+
+                next_token = torch.cat([pred_alto, pred_tenor, pred_bass], dim=1).unsqueeze(1)
+                last_generated = next_token  # update cache
+            else:
+                # Hold previous harmony note for minimum duration
+                next_token = last_generated.clone()
+
             ys = torch.cat([ys, next_token], dim=1)
+
             if print_debug:
                 print(f"Time step {t+1}:")
-                print("Current generated token:")
+                print("Generated/held token:")
                 print(next_token)
                 print("Updated ys:")
                 print(ys)
@@ -199,8 +260,10 @@ class TransformerHarmonizer(nn.Module):
 # Build Model, Optimizer, Criterion (Reduced scale)
 ##############################
 def build_model():
+    # Set `hold_steps` to 2 for eighth‑notes (2×1/16) or 4 for quarter‑notes (4×1/16)
     model = TransformerHarmonizer(INPUT_VOCAB_SIZE, OUTPUT_VOCAB_SIZE, d_model, nhead=NHEAD,
-                                  num_encoder_layers=NUM_ENCODER_LAYERS, num_decoder_layers=NUM_DECODER_LAYERS, dropout=DROPOUT)
+                                  num_encoder_layers=NUM_ENCODER_LAYERS, num_decoder_layers=NUM_DECODER_LAYERS,
+                                  dropout=DROPOUT, hold_steps=4)
     model.to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss(ignore_index=PAD_TOKEN)
@@ -284,9 +347,10 @@ def generate_predictions(model, test_loader):
                     else:
                         combined.append([soprano_seq[t], SOS_TOKEN, SOS_TOKEN, SOS_TOKEN])
                 all_satb.append(combined)
-    with open("satb_predictions.json", "w") as f:
+    pred_json_path = os.path.join(PRED_OUTPUT_FOLDER, "satb_predictions.json")
+    with open(pred_json_path, "w") as f:
         json.dump(all_satb, f, indent=2)
-    print("SATB predictions have been saved to 'satb_predictions.json'.")
+    print(f"SATB predictions have been saved to '{pred_json_path}'.")
 
 def convert_satb_to_midi(sample_satb, out_midi_path="satb_sample.mid"):
     soprano_part = stream.Part(id="Soprano")
@@ -362,14 +426,14 @@ if __name__ == "__main__":
     # Create dataset and dataloaders.
     dataset = ChoraleDataset(INPUT_FOLDER, OUTPUT_FOLDER)
     print(f"Total samples (paragraphs): {len(dataset)}")
-    train_loader, val_loader, test_loader = create_dataloaders(dataset, batch_size=1)
+    train_loader, val_loader, test_loader = create_dataloaders(dataset, batch_size=10)
     
     # Build the Transformer-based model.
     model, optimizer, criterion = build_model()
     
     # Train the model with low teacher forcing ratio.
     print("Starting training...")
-    train_model(model, train_loader, optimizer, criterion, num_epochs=10, teacher_forcing_ratio=0.3)
+    train_model(model, train_loader, optimizer, criterion, num_epochs=1, teacher_forcing_ratio=0.3)
     
     # Evaluate the model.
     evaluate_model(model, val_loader, criterion)
@@ -378,11 +442,12 @@ if __name__ == "__main__":
     generate_predictions(model, test_loader)
     
     # Convert the first SATB prediction to MIDI.
-    with open("satb_predictions.json", "r") as f:
+    pred_json_path = os.path.join(PRED_OUTPUT_FOLDER, "satb_predictions.json")
+    with open(pred_json_path, "r") as f:
         satb_data = json.load(f)
     if len(satb_data) > 0:
         sample_satb = satb_data[0]
-        midi_path = os.path.join(MIDI_OUTPUT_FOLDER, "satb_sample.mid")
+        midi_path = os.path.join(PRED_OUTPUT_FOLDER, "satb_sample.mid")
         score = convert_satb_to_midi(sample_satb, out_midi_path=midi_path)
         pm = pretty_midi.PrettyMIDI(midi_path)
         piano_roll = pm.get_piano_roll(fs=100)
