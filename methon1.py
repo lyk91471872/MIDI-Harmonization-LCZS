@@ -426,14 +426,14 @@ if __name__ == "__main__":
     # Create dataset and dataloaders.
     dataset = ChoraleDataset(INPUT_FOLDER, OUTPUT_FOLDER)
     print(f"Total samples (paragraphs): {len(dataset)}")
-    train_loader, val_loader, test_loader = create_dataloaders(dataset, batch_size=10)
+    train_loader, val_loader, test_loader = create_dataloaders(dataset, batch_size=1)
     
     # Build the Transformer-based model.
     model, optimizer, criterion = build_model()
     
     # Train the model with low teacher forcing ratio.
     print("Starting training...")
-    train_model(model, train_loader, optimizer, criterion, num_epochs=1, teacher_forcing_ratio=0.3)
+    train_model(model, train_loader, optimizer, criterion, num_epochs=10, teacher_forcing_ratio=0.3)
     
     # Evaluate the model.
     evaluate_model(model, val_loader, criterion)
