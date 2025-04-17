@@ -23,6 +23,9 @@ os.makedirs(MIDI_OUTPUT_FOLDER, exist_ok=True)
 # Folder for predictions (.json) and generated sample MIDI
 PRED_OUTPUT_FOLDER = "OUTPUT"
 os.makedirs(PRED_OUTPUT_FOLDER, exist_ok=True)
+# Folder for saving trained model checkpoints
+MODEL_OUTPUT_FOLDER = "saved_models"
+os.makedirs(MODEL_OUTPUT_FOLDER, exist_ok=True)
 
 ##############################
 # Global Hyperparameters (Reduced settings for limited memory)
@@ -270,6 +273,233 @@ def build_model():
     return model, optimizer, criterion
 
 ##############################
+# Model Checkpoint Helpers
+##############################
+def save_checkpoint(model, optimizer, epoch, path):
+    """
+    Save model + optimizer state for later fine‑tuning or inference.
+    """
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+    }, path)
+    print(f"Checkpoint saved to '{path}'.")
+
+def load_checkpoint(path, device=DEVICE):
+    """
+    Rebuild the model (with current hyper‑params) and load weights.
+    Returns the model and the epoch number stored in the checkpoint.
+    """
+    checkpoint = torch.load(path, map_location=device)
+    model, _, _ = build_model()          # uses current globals
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.to(device)
+    epoch = checkpoint.get('epoch', 0)
+    print(f"Loaded checkpoint from '{path}' (epoch {epoch}).")
+    return model, epoch
+
+##############################
+# Consonance / Dissonance Helper
+##############################
+_CONSONANT_CLASSES = {0, 3, 4, 5, 7, 8, 9}  # pitch‑class intervals considered consonant
+def dissonance_penalty(soprano: torch.Tensor, harmony: torch.Tensor, pad_val=PAD_TOKEN) -> torch.Tensor:
+    """
+    Compute average dissonance mask between soprano (batch, seq) and harmony (batch, seq).
+    
+    Returns a scalar tensor = proportion of non‑pad positions that are dissonant.
+    """
+    # Mask out padded positions
+    valid = (harmony != pad_val) & (soprano != pad_val)
+    if valid.sum() == 0:
+        return torch.tensor(0.0, device=soprano.device)
+    interval = torch.abs(harmony - soprano) % 12  # pitch‑class interval
+    dissonant = ~torch.isin(interval, torch.tensor(list(_CONSONANT_CLASSES), device=soprano.device))
+    return dissonant[valid].float().mean()
+
+# ------------------------------------------------------------------
+# Tonal‑theory chord‑legality helper
+# ------------------------------------------------------------------
+_ALLOWED_CHORD_STRUCTS = [
+    {0, 4, 7},        # Major triad
+    {0, 3, 7},        # Minor triad
+    {0, 3, 6},        # Diminished triad
+    {0, 4, 8},        # Augmented triad
+    {0, 4, 7, 11},    # Major‑major 7th
+    {0, 4, 7, 10},    # Dominant 7th
+    {0, 3, 7, 10},    # Minor‑minor 7th
+    {0, 3, 6, 10},    # Half‑diminished 7th
+    {0, 3, 6, 9},     # Fully‑diminished 7th
+]
+# ------------------------------------------------------------------
+# Progression helper: encourage V(7) → I or V ↔ V7
+# ------------------------------------------------------------------
+def dominant_progress_penalty(soprano, alto, tenor, bass, pad_val=PAD_TOKEN):
+    """
+    Return scalar tensor = fraction of dominant chords whose following chord
+    *fails* to resolve to the tonic (down a perfect fifth) OR move between V
+    and V7 (same root).
+    
+    Root is approximated by bass pitch‑class; this works because Bach chorales
+    very rarely invert V or I outside 6‑4 cadential patterns.
+    """
+    batch, seq = soprano.shape
+    viol = dom = 0
+    for b in range(batch):
+        for t in range(seq - 1):       # look ahead one step
+            if soprano[b, t] == pad_val:
+                continue
+            # Build pitch‑class set of current chord (relative to bass root)
+            root = int(bass[b, t] % 12)
+            pcs  = {int(p % 12) for p in (soprano[b, t], alto[b, t], tenor[b, t], bass[b, t])}
+            rel  = {(p - root) % 12 for p in pcs}
+            is_dom_triad  = rel == {0, 4, 7}
+            is_dom_seventh = rel == {0, 4, 7, 10}
+            if not (is_dom_triad or is_dom_seventh):
+                continue
+            dom += 1
+            next_root = int(bass[b, t + 1] % 12)
+            semitone_down_fifth = (root - 7) % 12  # resolve to tonic
+            if next_root not in (root, semitone_down_fifth):
+                viol += 1
+    if dom == 0:
+        return torch.tensor(0.0, device=soprano.device)
+    return torch.tensor(viol / dom, dtype=torch.float32, device=soprano.device)
+
+# ------------------------------------------------------------------
+# Progression helper: circle‑of‑fifths / stepwise root motion
+# ------------------------------------------------------------------
+_ALLOWED_ROOT_INTERVALS = {0, 2, 5, 7}  # unison, M2/m2, P4, P5 (mod‑12)
+def root_motion_penalty(soprano, alto, tenor, bass, pad_val=PAD_TOKEN):
+    """
+    Fraction of valid chord transitions where the bass‑defined roots do NOT
+    move by an allowed interval (unison = prolong, ±2 semitones stepwise,
+    +5 or +7 semitones ≈ ascending 4th / descending 5th circle‑motion).
+ 
+    Lower is better; 1.0 means every transition is illegal.
+    """
+    batch, seq = soprano.shape
+    viol = moves = 0
+    for b in range(batch):
+        for t in range(seq - 1):
+            if soprano[b, t] == pad_val or soprano[b, t+1] == pad_val:
+                continue
+            root_now  = int(bass[b, t]   % 12)
+            root_next = int(bass[b, t+1] % 12)
+            interval  = (root_next - root_now) % 12
+            moves += 1
+            if interval not in _ALLOWED_ROOT_INTERVALS:
+                viol += 1
+    if moves == 0:
+        return torch.tensor(0.0, device=soprano.device)
+    return torch.tensor(viol / moves, dtype=torch.float32, device=soprano.device)
+
+def illegal_chord_fraction(soprano, alto, tenor, bass, pad_val=PAD_TOKEN):
+    """
+    Return scalar tensor = fraction of non‑pad time‑steps whose SATB pitch‑class
+    set fails to match ANY allowed structure above (transposition‑invariant).
+    """
+    batch, seq = soprano.shape
+    illegal = valid = 0
+    for b in range(batch):
+        for t in range(seq):
+            if soprano[b, t] == pad_val:
+                continue
+            pcs = {int(x % 12) for x in
+                   (soprano[b, t], alto[b, t], tenor[b, t], bass[b, t])}
+            matched = False
+            for root in pcs:                      # test every note as potential root
+                rel = {(p - root) % 12 for p in pcs}
+                if rel in _ALLOWED_CHORD_STRUCTS:
+                    matched = True
+                    break
+            valid += 1
+            if not matched:
+                illegal += 1
+    if valid == 0:
+        return torch.tensor(0.0, device=soprano.device)
+    return torch.tensor(illegal / valid, dtype=torch.float32, device=soprano.device)
+
+# ------------------------------------------------------------------
+# Part‑writing helper: penalise parallel 5ths & 8ves between any voice pair
+# ------------------------------------------------------------------
+_PARALLEL_INTERVALS = {0, 7}  # perfect unison/octave (0) and fifth (7)
+def parallel_motion_penalty(soprano, alto, tenor, bass, pad_val=PAD_TOKEN):
+    """
+    Returns scalar tensor = proportion of consecutive chord pairs that
+    contain *any* parallel 5th or octave between the same two voices.
+ 
+    Simplified rule: check S‑A, S‑T, S‑B, A‑T, A‑B, T‑B.  Parallel if
+        1) the interval at time t  is 0 or 7,
+        2) the interval at time t+1 is 0 or 7,
+        3) both voices actually move.
+    """
+    voices = [soprano, alto, tenor, bass]  # tensors [batch, seq]
+    batch, seq = soprano.shape
+    total_pairs = viol_pairs = 0
+    for i in range(4):
+        for j in range(i + 1, 4):
+            v1, v2 = voices[i], voices[j]
+            for b in range(batch):
+                for t in range(seq - 1):
+                    if (v1[b, t] == pad_val or v2[b, t] == pad_val or
+                        v1[b, t+1] == pad_val or v2[b, t+1] == pad_val):
+                        continue
+                    int_now  = abs(int(v1[b, t])   - int(v2[b, t]))   % 12
+                    int_next = abs(int(v1[b, t+1]) - int(v2[b, t+1])) % 12
+                    if int_now in _PARALLEL_INTERVALS and int_next in _PARALLEL_INTERVALS:
+                        if v1[b, t] != v1[b, t+1] and v2[b, t] != v2[b, t+1]:
+                            viol_pairs += 1
+                    total_pairs += 1
+    if total_pairs == 0:
+        return torch.tensor(0.0, device=soprano.device)
+    return torch.tensor(viol_pairs / total_pairs, dtype=torch.float32, device=soprano.device)
+
+# ------------------------------------------------------------------
+# Voice‑crossing penalty: maintain SATB register ordering
+# ------------------------------------------------------------------
+def voice_crossing_penalty(soprano, alto, tenor, bass, pad_val=PAD_TOKEN):
+    """
+    Return scalar tensor = fraction of valid chords that violate the
+    standard register ordering S ≥ A ≥ T ≥ B.
+    """
+    batch, seq = soprano.shape
+    viol = valid = 0
+    for b in range(batch):
+        for t in range(seq):
+            if soprano[b, t] == pad_val:
+                continue
+            valid += 1
+            if not (soprano[b, t] >= alto[b, t] >= tenor[b, t] >= bass[b, t]):
+                viol += 1
+    if valid == 0:
+        return torch.tensor(0.0, device=soprano.device)
+    return torch.tensor(viol / valid, dtype=torch.float32, device=soprano.device)
+
+# ------------------------------------------------------------------
+# Large‑leap penalty: discourage leaps larger than a perfect fifth
+# ------------------------------------------------------------------
+_MAX_CONSONANT_LEAP = 7  # semitones (P5). Change to 12 for octave+
+def large_leap_penalty(voice, pad_val=PAD_TOKEN):
+    """
+    Fraction of melodic intervals > _MAX_CONSONANT_LEAP between successive
+    notes in a single voice tensor [batch, seq].
+    """
+    batch, seq = voice.shape
+    viol = moves = 0
+    for b in range(batch):
+        for t in range(seq - 1):
+            if voice[b, t] == pad_val or voice[b, t+1] == pad_val:
+                continue
+            interval = abs(int(voice[b, t+1]) - int(voice[b, t]))
+            moves += 1
+            if interval > _MAX_CONSONANT_LEAP:
+                viol += 1
+    if moves == 0:
+        return torch.tensor(0.0, device=voice.device)
+    return torch.tensor(viol / moves, dtype=torch.float32, device=voice.device)
+
+##############################
 # Training Function with teacher forcing ratio and weighted Bass loss
 ##############################
 def train_model(model, train_loader, optimizer, criterion, num_epochs=10, teacher_forcing_ratio=0.3):
@@ -291,7 +521,40 @@ def train_model(model, train_loader, optimizer, criterion, num_epochs=10, teache
             loss_alto = criterion(out_alto, trg_alto)
             loss_tenor = criterion(out_tenor, trg_tenor)
             loss_bass = criterion(out_bass, trg_bass)
-            loss = loss_alto + loss_tenor + 0.3 * loss_bass
+            # Soft penalty for vertical dissonances w.r.t. the soprano
+            pen_alto  = dissonance_penalty(src, trg[:,:,0])
+            pen_tenor = dissonance_penalty(src, trg[:,:,1])
+            pen_bass  = dissonance_penalty(src, trg[:,:,2])
+            consonance_penalty = (pen_alto + pen_tenor + pen_bass) / 3.0
+            # Penalty for chords outside the allowed tonal set
+            penalty_illegal = illegal_chord_fraction(src,
+                                                     trg[:,:,0], trg[:,:,1], trg[:,:,2])
+            # Penalty when V does NOT resolve to I or toggle V↔V7
+            penalty_progress = dominant_progress_penalty(src,
+                                                         trg[:,:,0], trg[:,:,1], trg[:,:,2])
+            # Penalty for root motions outside circle‑of‑fifths / stepwise set
+            penalty_root = root_motion_penalty(src,
+                                               trg[:,:,0], trg[:,:,1], trg[:,:,2])
+            # Penalty for parallel perfect 5ths or octaves
+            penalty_parallel = parallel_motion_penalty(src,
+                                                       trg[:,:,0], trg[:,:,1], trg[:,:,2])
+            # Penalty for voice crossing
+            penalty_cross = voice_crossing_penalty(src,
+                                                   trg[:,:,0], trg[:,:,1], trg[:,:,2])
+            # Penalty for large melodic leaps in each voice
+            leap_s = large_leap_penalty(src)
+            leap_a = large_leap_penalty(trg[:,:,0])
+            leap_t = large_leap_penalty(trg[:,:,1])
+            leap_b = large_leap_penalty(trg[:,:,2])
+            penalty_leap = (leap_s + leap_a + leap_t + leap_b) / 4.0
+            loss = (loss_alto + loss_tenor + 0.3 * loss_bass
+                    + 0.2 * consonance_penalty
+                    + 0.2 * penalty_illegal
+                    + 0.1 * penalty_progress
+                    + 0.1 * penalty_root
+                    + 0.1 * penalty_parallel
+                    + 0.05 * penalty_cross
+                    + 0.05 * penalty_leap)
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
@@ -432,8 +695,15 @@ if __name__ == "__main__":
     model, optimizer, criterion = build_model()
     
     # Train the model with low teacher forcing ratio.
+    EPOCHS_RUN = 3   # 2‑4 epochs are usually good enough
     print("Starting training...")
-    train_model(model, train_loader, optimizer, criterion, num_epochs=10, teacher_forcing_ratio=0.3)
+    train_model(model, train_loader, optimizer, criterion,
+                num_epochs=EPOCHS_RUN, teacher_forcing_ratio=0.3)
+
+    # Save trained model checkpoint
+    ckpt_path = os.path.join(MODEL_OUTPUT_FOLDER,
+                             f"transformer_harmonizer_epoch{EPOCHS_RUN}.pt")
+    save_checkpoint(model, optimizer, epoch=EPOCHS_RUN, path=ckpt_path)
     
     # Evaluate the model.
     evaluate_model(model, val_loader, criterion)
