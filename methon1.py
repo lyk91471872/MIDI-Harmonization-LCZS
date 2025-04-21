@@ -307,7 +307,7 @@ def dissonance_penalty(soprano: torch.Tensor, harmony: torch.Tensor, pad_val=PAD
     """
     Compute average dissonance mask between soprano (batch, seq) and harmony (batch, seq).
     
-    Returns a scalar tensor = proportion of non‑pad positions that are dissonant.
+    Returns a scalar tensor = proportion of non-pad positions that are dissonant.
     """
     # Mask out padded positions
     valid = (harmony != pad_val) & (soprano != pad_val)
