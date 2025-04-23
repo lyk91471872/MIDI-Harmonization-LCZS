@@ -483,6 +483,29 @@ def voice_crossing_penalty(soprano, alto, tenor, bass, pad_val=PAD_TOKEN):
     return torch.tensor(viol / valid, dtype=torch.float32, device=soprano.device)
 
 # ------------------------------------------------------------------
+# ATB register‑ordering helper: enforce A ≥ T ≥ B
+# ------------------------------------------------------------------
+def atb_order_penalty(alto, tenor, bass, pad_val=PAD_TOKEN):
+    """
+    Return scalar tensor = fraction of valid chords whose Alto‑Tenor‑Bass
+    register ordering is violated (should satisfy A ≥ T ≥ B).
+
+    A lower value is better; 1.0 means every valid chord breaks the rule.
+    """
+    batch, seq = alto.shape
+    viol = valid = 0
+    for b in range(batch):
+        for t in range(seq):
+            if alto[b, t] == pad_val:
+                continue
+            valid += 1
+            if not (alto[b, t] >= tenor[b, t] >= bass[b, t]):
+                viol += 1
+    if valid == 0:
+        return torch.tensor(0.0, device=alto.device)
+    return torch.tensor(viol / valid, dtype=torch.float32, device=alto.device)
+
+# ------------------------------------------------------------------
 # Large‑leap penalty: discourage leaps larger than a perfect fifth
 # ------------------------------------------------------------------
 _MAX_CONSONANT_LEAP = 7  # semitones (P5). Change to 12 for octave+
@@ -547,6 +570,7 @@ def train_model(model, train_loader, optimizer, criterion, num_epochs=10, teache
             # Penalty for voice crossing
             penalty_cross = voice_crossing_penalty(src,
                                                    trg[:,:,0], trg[:,:,1], trg[:,:,2])
+            penalty_atb_order = atb_order_penalty(trg[:,:,0], trg[:,:,1], trg[:,:,2])
             # Penalty for large melodic leaps in each voice
             leap_s = large_leap_penalty(src)
             leap_a = large_leap_penalty(trg[:,:,0])
@@ -560,6 +584,7 @@ def train_model(model, train_loader, optimizer, criterion, num_epochs=10, teache
                     + 0.1 * penalty_root
                     + 0.1 * penalty_parallel
                     + 0.05 * penalty_cross
+                    + 0.05 * penalty_atb_order
                     + 0.05 * penalty_leap)
             loss.backward()
             optimizer.step()
