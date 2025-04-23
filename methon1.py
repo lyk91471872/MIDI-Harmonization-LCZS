@@ -27,6 +27,12 @@ os.makedirs(PRED_OUTPUT_FOLDER, exist_ok=True)
 MODEL_OUTPUT_FOLDER = "saved_models"
 os.makedirs(MODEL_OUTPUT_FOLDER, exist_ok=True)
 
+# ---------------------------
+# Data-augmentation controls
+# ---------------------------
+AUGMENT_TRANSPOSITION = True        # flip to False during evaluation
+TRANSP_RANGE = (-5, 6)              # inclusive semitone shift
+
 ##############################
 # Global Hyperparameters (Reduced settings for limited memory)
 ##############################
@@ -660,6 +666,11 @@ class ChoraleDataset(Dataset):
         with open(self.output_files[idx], 'r') as f:
             output_seq = json.load(f)
         input_tensor = torch.tensor(input_seq, dtype=torch.long)
+        if AUGMENT_TRANSPOSITION:
+            shift = random.randint(*TRANSP_RANGE)
+            input_seq  = [(p + shift) % 128 for p in input_seq]
+            output_seq = [[(n + shift) % 128 for n in chord]
+                          for chord in output_seq]
         output_tensor = torch.tensor(output_seq, dtype=torch.long)
         return {'soprano': input_tensor, 'atb': output_tensor}
 
