@@ -38,15 +38,15 @@ TRANSP_RANGE = (-5, 6)              # inclusive semitone shift
 ##############################
 # Global Hyperparameters (Reduced settings for limited memory)
 ##############################
-HIDDEN_SIZE = 128            # Keep hidden size at 128
+HIDDEN_SIZE = 256            # Keep hidden size at 128
 NUM_ENCODER_LAYERS = 2       # Reduced from 4 layers to 2 layers
 NUM_DECODER_LAYERS = 2       # Reduced from 4 layers to 2 layers
 NHEAD = 4                    # Use 4 attention heads instead of 8
-DROPOUT = 0.1
+DROPOUT = 0.0
 PAD_TOKEN = 0
 SOS_TOKEN = 128
-INPUT_VOCAB_SIZE = 196
-OUTPUT_VOCAB_SIZE = 196
+INPUT_VOCAB_SIZE = 129  # 0–127 = MIDI pitches, 128 = SOS
+OUTPUT_VOCAB_SIZE = 129  # match INPUT_VOCAB_SIZE to include SOS token
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 d_model = HIDDEN_SIZE
 
@@ -467,7 +467,7 @@ def build_model_lstm():
 ##############################
 # Model Checkpoint Helpers
 ##############################
-def save_checkpoint(model, optimizer, epoch, path):
+def save_checkpoint(model, optimizer, epoch, path, verbose=True):
     """
     Save model + optimizer state for later fine‑tuning or inference.
     """
@@ -476,7 +476,8 @@ def save_checkpoint(model, optimizer, epoch, path):
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
     }, path)
-    print(f"Checkpoint saved to '{path}'.")
+    if verbose:
+        print(f"Checkpoint saved to '{path}'.")
 
 def load_checkpoint(path, device=DEVICE):
     """
@@ -797,7 +798,7 @@ def train_model(model, train_loader, val_loader, optimizer, criterion,
             best_epoch = epoch + 1
             ckpt_path = os.path.join(MODEL_OUTPUT_FOLDER,
                                      f"{model_name.lower()}_harmonizer_best.pt")
-            save_checkpoint(model, optimizer, epoch + 1, ckpt_path)
+            save_checkpoint(model, optimizer, epoch + 1, ckpt_path, verbose=False)
     print(f"Training finished. Best epoch: {best_epoch}  •  Val-loss: {best_val_loss:.4f}")
 
 ##############################
@@ -831,7 +832,7 @@ def evaluate_model(model, val_loader, criterion):
 ##############################
 # Inference and MIDI Generation Functions
 ##############################
-def generate_predictions(model, test_loader, out_path):
+def generate_predictions(model, test_loader, out_prefix):
     model.eval()
     all_satb = []
     with torch.no_grad():
@@ -851,9 +852,16 @@ def generate_predictions(model, test_loader, out_path):
                     else:
                         combined.append([soprano_seq[t], SOS_TOKEN, SOS_TOKEN, SOS_TOKEN])
                 all_satb.append(combined)
-    with open(out_path, "w") as f:
-        json.dump(all_satb, f, indent=2)
-    print(f"SATB predictions have been saved to '{out_path}'.")
+    json_paths = []
+    for idx, sample_satb in enumerate(all_satb, start=1):
+        path = f"{out_prefix}_{idx}.json"
+        with open(path, "w") as f:
+            json.dump(sample_satb, f, indent=2)
+        json_paths.append(path)
+    print(f"SATB predictions saved to {len(json_paths)} files:")
+    for p in json_paths:
+        print("  •", p)
+    return json_paths
 
 def convert_satb_to_midi(sample_satb, out_midi_path="satb_sample.mid"):
     soprano_part = stream.Part(id="Soprano")
@@ -950,7 +958,7 @@ if __name__ == "__main__":
     dataset = ChoraleDataset(INPUT_FOLDER, OUTPUT_FOLDER)
     print(f"Total samples (paragraphs): {len(dataset)}")
     train_loader, val_loader, test_loader = create_dataloaders(dataset, batch_size=1)
-    
+
     # --------------------------------------------------------
     # Model selection (interactive prompt)
     # --------------------------------------------------------
@@ -973,7 +981,7 @@ if __name__ == "__main__":
     print(f"Penalties {'enabled' if use_penalties else 'disabled'}.\n")
 
     # Train the model with low teacher forcing ratio.
-    EPOCHS_RUN = 5   # 2‑4 epochs are usually good enough
+    EPOCHS_RUN = 50   # 2‑4 epochs are usually good enough for transformer
     print("Starting training...")
     train_model(model, train_loader, val_loader, optimizer, criterion,
                 num_epochs=EPOCHS_RUN, teacher_forcing_ratio=0.3,
@@ -983,28 +991,29 @@ if __name__ == "__main__":
     ckpt_path = os.path.join(MODEL_OUTPUT_FOLDER,
                              f"{model_name.lower()}_harmonizer_epoch{EPOCHS_RUN}.pt")
     save_checkpoint(model, optimizer, epoch=EPOCHS_RUN, path=ckpt_path)
-    
+
     # Evaluate the model.
     evaluate_model(model, val_loader, criterion)
 
-
-    
     # Generate predictions on the test set using temperature sampling.
     penalty_tag = "pen" if use_penalties else "nopen"
-    pred_json_path = os.path.join(
+    pred_prefix = os.path.join(
         PRED_OUTPUT_FOLDER,
-        f"satb_predictions_{model_name.lower()}_{penalty_tag}.json"
+        f"satb_predictions_{model_name.lower()}_{penalty_tag}"
     )
-    generate_predictions(model, test_loader, pred_json_path)
-    
-    # Convert *all* SATB predictions to MIDI (one file per test sample)
-    with open(pred_json_path, "r") as f:
-        satb_data = json.load(f)
+    json_paths = generate_predictions(model, test_loader, pred_prefix)
 
-    if len(satb_data) == 0:
+    # Load all generated SATB prediction JSONs
+    satb_data_list = []
+    for p in json_paths:
+        with open(p, "r") as f:
+            satb_data_list.append(json.load(f))
+
+    # Convert *all* SATB predictions to MIDI (one file per test sample)
+    if len(satb_data_list) == 0:
         print("No SATB predictions found for MIDI conversion.")
     else:
-        for idx, sample_satb in enumerate(satb_data):
+        for idx, sample_satb in enumerate(satb_data_list):
             midi_path = os.path.join(
                 PRED_OUTPUT_FOLDER,
                 f"satb_sample_{model_name.lower()}_{penalty_tag}_{idx+1}.mid"
