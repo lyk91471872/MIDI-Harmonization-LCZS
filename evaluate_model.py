@@ -48,12 +48,12 @@ def count_midi_failures(output_dir: str) -> Tuple[int, int, float]:
     failure_percentage = (failed_files / total_files * 100) if total_files > 0 else 0
     return total_files, failed_files, failure_percentage
 
-def get_note_distribution(data: List[List[List[int]]], voice_idx: int = None, is_atb: bool = False) -> Dict[int, float]:
+def get_note_distribution(data: List[List[int]] | List[List[List[int]]], voice_idx: int = None, is_atb: bool = False) -> Dict[int, float]:
     """
     Calculate the distribution of notes in the dataset.
     
     Args:
-        data: List of sequences, where each sequence is a list of chords, and each chord is a list of [S,A,T,B] or [A,T,B] notes
+        data: List of sequences or a single sequence, where each sequence/chord is either [S,A,T,B] or [A,T,B]
         voice_idx: If provided, only analyze specific voice (0=S/A, 1=A/T, 2=T/B, 3=B)
         is_atb: Whether the data is in ATB format (True) or SATB format (False)
     
@@ -63,9 +63,13 @@ def get_note_distribution(data: List[List[List[int]]], voice_idx: int = None, is
     if not data:
         print("Warning: Empty data provided to get_note_distribution")
         return {}
+    
+    # Check if data is a single sequence or list of sequences
+    is_single_sequence = all(isinstance(x, int) for x in data[0])
+    sequences = [data] if is_single_sequence else data
         
     notes = []
-    for sequence in data:
+    for sequence in sequences:
         for chord in sequence:
             if voice_idx is not None:
                 # Adjust voice index for ATB format
@@ -79,10 +83,10 @@ def get_note_distribution(data: List[List[List[int]]], voice_idx: int = None, is
                         adjusted_idx = 2
                     elif voice_idx == 3:  # Bass
                         adjusted_idx = 2  # Bass is the third voice in ATB format
-                if adjusted_idx < len(chord):
+                
+                # Get the note if the index is valid
+                if adjusted_idx < (3 if is_atb else 4):
                     notes.append(chord[adjusted_idx])
-                else:
-                    print(f"Warning: Voice index {adjusted_idx} out of range for chord {chord}")
             else:
                 notes.extend(chord)
     
@@ -96,6 +100,16 @@ def get_note_distribution(data: List[List[List[int]]], voice_idx: int = None, is
     
     # Convert to percentages
     return {note: count/total * 100 for note, count in counter.items()}
+
+def midi_to_pitch(midi_number: int) -> str:
+    """
+    Convert MIDI number to pitch name (e.g., 60 -> 'C4', 61 -> 'C#4', etc.)
+    MIDI number 60 corresponds to middle C (C4)
+    """
+    pitch_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    octave = (midi_number - 12) // 12
+    note = midi_number % 12
+    return f"{pitch_names[note]}{octave}"
 
 def plot_distribution_comparison(train_dist: Dict[int, float],
                                gen_dist: Dict[int, float],
@@ -120,34 +134,73 @@ def plot_distribution_comparison(train_dist: Dict[int, float],
     train_values = [train_dist.get(note, 0) for note in all_notes]
     gen_values = [gen_dist.get(note, 0) for note in all_notes]
     
+    # Convert MIDI numbers to pitch names
+    pitch_names = [midi_to_pitch(note) for note in all_notes]
+    
     # Create plot
     plt.figure(figsize=(15, 6))
     width = 0.35
     plt.bar(x - width/2, train_values, width, label='Training Data')
     plt.bar(x + width/2, gen_values, width, label='Generated Data')
     
-    plt.xlabel('MIDI Note Number')
+    plt.xlabel('Pitch')
     plt.ylabel('Frequency (%)')
     plt.title(title)
     plt.legend()
-    plt.xticks(x, all_notes, rotation=45)
+    plt.xticks(x, pitch_names, rotation=45)
     
     if save_path:
         plt.savefig(save_path, bbox_inches='tight')
         print(f"Saved plot to {save_path}")
     plt.close()
 
+def test_midi_to_pitch():
+    """
+    Test the MIDI to pitch conversion function
+    """
+    test_cases = [
+        (60, "C4"),  # Middle C
+        (61, "C#4"),
+        (72, "C5"),
+        (48, "C3"),
+        (69, "A4"),  # A440
+        (57, "A3"),
+        (45, "A2")
+    ]
+    
+    print("\nTesting MIDI to pitch conversion:")
+    for midi, expected in test_cases:
+        result = midi_to_pitch(midi)
+        print(f"MIDI {midi} -> {result} (Expected: {expected})")
+        assert result == expected, f"Error: MIDI {midi} converted to {result}, expected {expected}"
+
 def main():
+    # Test MIDI to pitch conversion first
+    test_midi_to_pitch()
+    
     # Paths
     output_dir = "midi_outputs"  # Directory containing generated MIDI files
     training_data_path = "atb_parts.json"  # Path to training data
-    generated_data_path = "OUTPUT/satb_predictions.json"  # Path to generated SATB predictions
     results_dir = "evaluation_results"
     
+    # List of model variants to evaluate
+    model_variants = [
+        ("lstm_nopen_1", "LSTM (No Penalty) v1"),
+        ("lstm_nopen_2", "LSTM (No Penalty) v2"),
+        ("lstm_nopen_3", "LSTM (No Penalty) v3"),
+        ("lstm_pen_1", "LSTM (With Penalty) v1"),
+        ("lstm_pen_2", "LSTM (With Penalty) v2"),
+        ("lstm_pen_3", "LSTM (With Penalty) v3"),
+        ("transformer_nopen_1", "Transformer (No Penalty) v1"),
+        ("transformer_nopen_2", "Transformer (No Penalty) v2"),
+        ("transformer_nopen_3", "Transformer (No Penalty) v3"),
+        ("transformer_pen_1", "Transformer (With Penalty) v1"),
+        ("transformer_pen_2", "Transformer (With Penalty) v2"),
+        ("transformer_pen_3", "Transformer (With Penalty) v3")
+    ]
+    
     print("Starting evaluation...")
-    print(f"Output directory: {output_dir}")
     print(f"Training data path: {training_data_path}")
-    print(f"Generated data path: {generated_data_path}")
     
     # Create results directory
     try:
@@ -165,6 +218,17 @@ def main():
     print(f"Failed files: {failed}")
     print(f"Failure rate: {failure_rate:.2f}%")
     
+    # Save MIDI conversion results
+    results_file = os.path.join(results_dir, "midi_conversion_results.txt")
+    with open(results_file, 'w') as f:
+        f.write("MIDI Conversion Evaluation Results\n")
+        f.write("================================\n\n")
+        f.write(f"Total files analyzed: {total}\n")
+        f.write(f"Failed files: {failed}\n")
+        f.write(f"Failure rate: {failure_rate:.2f}%\n")
+    
+    print(f"\nResults saved to {results_file}")
+    
     # 2. Compare note distributions
     print("\nLoading training data...")
     try:
@@ -175,54 +239,50 @@ def main():
         print(f"Error loading training data: {str(e)}")
         return
     
-    # Load generated results
-    print("\nLoading generated results...")
-    try:
-        with open(generated_data_path, 'r') as f:
-            generated_data = json.load(f)
-        print(f"Loaded {len(generated_data)} sequences")
-    except Exception as e:
-        print(f"Error loading generated results: {str(e)}")
-        return
+    # Calculate training distributions
+    print("\nCalculating training distributions...")
+    train_dist_all = get_note_distribution(training_data, is_atb=True)
+    train_dist_bass = get_note_distribution(training_data, voice_idx=3, is_atb=True)
     
-    if not generated_data:
-        print("Warning: No generated data found")
-        return
-    
-    # Calculate distributions
-    print("\nCalculating distributions...")
-    voice_names = ['Soprano', 'Alto', 'Tenor', 'Bass']
-    for i in range(4):  # For each voice
-        print(f"\nProcessing {voice_names[i]} voice...")
-        train_dist = get_note_distribution(training_data, i, is_atb=True)
-        gen_dist = get_note_distribution(generated_data, i, is_atb=False)
+    # Evaluate each model variant
+    for model_id, model_name in model_variants:
+        print(f"\nEvaluating {model_name}...")
         
-        if not train_dist or not gen_dist:
-            print(f"Warning: No data found for {voice_names[i]} voice")
+        # Load generated results
+        pred_file = f"Junhan Cui/OUTPUT/satb_predictions_{model_id}.json"
+        try:
+            with open(pred_file, 'r') as f:
+                generated_data = json.load(f)
+            print(f"Loaded {len(generated_data)} sequences from {model_id}")
+        except Exception as e:
+            print(f"Error loading generated results for {model_id}: {str(e)}")
             continue
         
-        # Plot comparison
-        plot_distribution_comparison(
-            train_dist,
-            gen_dist,
-            title=f"{voice_names[i]} Voice Note Distribution",
-            save_path=os.path.join(results_dir, f"{voice_names[i].lower()}_distribution.png")
-        )
-    
-    # Also plot overall distribution
-    print("\nCalculating overall distribution...")
-    train_dist_all = get_note_distribution(training_data, is_atb=True)
-    gen_dist_all = get_note_distribution(generated_data, is_atb=False)
-    
-    if train_dist_all and gen_dist_all:
-        plot_distribution_comparison(
-            train_dist_all,
-            gen_dist_all,
-            title="Overall Note Distribution",
-            save_path=os.path.join(results_dir, "overall_distribution.png")
-        )
-    else:
-        print("Warning: No data found for overall distribution")
+        if not generated_data:
+            print(f"Warning: No generated data found for {model_id}")
+            continue
+        
+        # Calculate generated distributions
+        gen_dist_all = get_note_distribution(generated_data, is_atb=False)
+        gen_dist_bass = get_note_distribution(generated_data, voice_idx=3, is_atb=False)
+        
+        # Plot overall distribution
+        if train_dist_all and gen_dist_all:
+            plot_distribution_comparison(
+                train_dist_all,
+                gen_dist_all,
+                title=f"Overall Note Distribution - {model_name}",
+                save_path=os.path.join(results_dir, f"overall_distribution_{model_id}.png")
+            )
+        
+        # Plot bass distribution
+        if train_dist_bass and gen_dist_bass:
+            plot_distribution_comparison(
+                train_dist_bass,
+                gen_dist_bass,
+                title=f"Bass Voice Note Distribution - {model_name}",
+                save_path=os.path.join(results_dir, f"bass_distribution_{model_id}.png")
+            )
 
 if __name__ == "__main__":
     main() 
