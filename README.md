@@ -109,9 +109,9 @@ The evaluation script now features:
 
 ### Key Findings
 1. **MIDI Generation**: Perfect conversion rate (0% failures)
-2. **Data Coverage**: Good sequence generation (132 sequences from LSTM)
-3. **Distribution Alignment**: Generated harmonies follow training data patterns
-4. **Bass Voice Analysis**: Special focus on harmonic foundation
+2. **Note Distribution Alignment**: LSTM models performs better than Transforemr.
+3. **Bass Voice Analysis**: LSTM with penalty has a minor impact.
+4. **Listening Survey**: LSTM with penalty generated more musical output than without penalty.
 
 ## Future Improvements
 - Implement additional metrics for voice leading analysis
