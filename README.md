@@ -5,6 +5,21 @@ this is readme~
 * some key point
 > some quote
 
+# This is Junhan Cui
+my role in this team is building a dual model training setup, and training it with small dataset, compare the performance between models and w & wo penalty.
+
+if you want to run my model----
+
+1: click into folder with my name
+2: open "model.py"
+3: run the code
+
+after running the code, the termnal will ask you some questions----
+1: which model you want to use (transformer or LSTM)
+2: do penalty involve during this training
+
+The pridiction result will appeared at OUTPUT folder~
+Enjoy your training!
 
 # Ao_Zhang_LSTM
 
