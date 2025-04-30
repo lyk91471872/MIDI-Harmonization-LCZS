@@ -11,7 +11,7 @@ import numpy as np
 from collections import Counter
 import matplotlib.pyplot as plt
 from music21 import converter, note
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Any
 
 def count_midi_failures(output_dir: str) -> Tuple[int, int, float]:
     """
@@ -111,41 +111,74 @@ def midi_to_pitch(midi_number: int) -> str:
     note = midi_number % 12
     return f"{pitch_names[note]}{octave}"
 
-def plot_distribution_comparison(train_dist: Dict[int, float],
-                               gen_dist: Dict[int, float],
-                               title: str = "Note Distribution Comparison",
-                               save_path: str = None):
-    """
-    Plot the comparison between training and generated note distributions.
-    """
-    if not train_dist and not gen_dist:
+def calculate_note_distribution(data: List[Any], voice: str = None, is_training: bool = False) -> Dict[int, int]:
+    """Calculate note distribution from the data."""
+    distribution = {}
+    
+    if is_training:
+        # Training data format: List[List[List[int]]] where inner lists are [soprano, alto, tenor, bass]
+        for sequence in data:
+            for chord in sequence:
+                if voice == 'bass':
+                    midi_number = chord[-1]  # Last note is bass
+                    distribution[midi_number] = distribution.get(midi_number, 0) + 1
+                else:  # All voices
+                    for midi_number in chord:
+                        distribution[midi_number] = distribution.get(midi_number, 0) + 1
+    else:
+        # Generated data format: List[Dict] with 'notes' field containing voice information
+        for item in data:
+            notes = item['notes']
+            if voice:
+                # Filter notes for the specified voice
+                notes = [note for note in notes if note['voice'] == voice]
+            for note in notes:
+                midi_number = note['midi_number']
+                distribution[midi_number] = distribution.get(midi_number, 0) + 1
+    
+    return distribution
+
+def plot_distribution_comparison(
+    training_dist: Dict[int, int],
+    generated_dist: Dict[int, int],
+    title: str,
+    output_path: str
+):
+    """Plot comparison of note distributions."""
+    if not training_dist and not generated_dist:
         print(f"Warning: No data to plot for {title}")
         return
-        
-    # Get all unique notes
-    all_notes = sorted(set(list(train_dist.keys()) + list(gen_dist.keys())))
-    
-    if not all_notes:
-        print(f"Warning: No notes found to plot for {title}")
-        return
-    
-    # Prepare data for plotting
-    x = np.arange(len(all_notes))
-    train_values = [train_dist.get(note, 0) for note in all_notes]
-    gen_values = [gen_dist.get(note, 0) for note in all_notes]
-    
+
     # Convert MIDI numbers to pitch names
-    pitch_names = [midi_to_pitch(note) for note in all_notes]
+    training_pitches = {midi_to_pitch(k): v for k, v in training_dist.items()}
+    generated_pitches = {midi_to_pitch(k): v for k, v in generated_dist.items()}
+
+    # Get all unique pitches
+    all_pitches = sorted(set(list(training_pitches.keys()) + list(generated_pitches.keys())))
+
+    # Prepare data for plotting
+    training_values = [training_pitches.get(pitch, 0) for pitch in all_pitches]
+    generated_values = [generated_pitches.get(pitch, 0) for pitch in all_pitches]
+
+    # Normalize the distributions
+    training_total = sum(training_values)
+    generated_total = sum(generated_values)
     
-    # Create plot
+    if training_total > 0:
+        training_values = [v/training_total for v in training_values]
+    if generated_total > 0:
+        generated_values = [v/generated_total for v in generated_values]
+
     plt.figure(figsize=(15, 6))
     width = 0.35
-    plt.bar(x - width/2, train_values, width, label='Training Data')
-    plt.bar(x + width/2, gen_values, width, label='Generated Data')
-    
+
+    plt.bar(x - width/2, training_values, width, label='Training Data')
+    plt.bar(x + width/2, generated_values, width, label='Generated Data')
+
     plt.xlabel('Pitch')
-    plt.ylabel('Frequency (%)')
+    plt.ylabel('Normalized Frequency')
     plt.title(title)
+    plt.xticks(x, all_pitches, rotation=45)
     plt.legend()
     plt.xticks(x, pitch_names, rotation=45)
     
@@ -241,48 +274,39 @@ def main():
     
     # Calculate training distributions
     print("\nCalculating training distributions...")
-    train_dist_all = get_note_distribution(training_data, is_atb=True)
-    train_dist_bass = get_note_distribution(training_data, voice_idx=3, is_atb=True)
-    
-    # Evaluate each model variant
-    for model_id, model_name in model_variants:
-        print(f"\nEvaluating {model_name}...")
-        
-        # Load generated results
-        pred_file = f"Junhan Cui/OUTPUT/satb_predictions_{model_id}.json"
-        try:
-            with open(pred_file, 'r') as f:
-                generated_data = json.load(f)
-            print(f"Loaded {len(generated_data)} sequences from {model_id}")
-        except Exception as e:
-            print(f"Error loading generated results for {model_id}: {str(e)}")
-            continue
-        
-        if not generated_data:
-            print(f"Warning: No generated data found for {model_id}")
-            continue
-        
-        # Calculate generated distributions
-        gen_dist_all = get_note_distribution(generated_data, is_atb=False)
-        gen_dist_bass = get_note_distribution(generated_data, voice_idx=3, is_atb=False)
-        
-        # Plot overall distribution
-        if train_dist_all and gen_dist_all:
-            plot_distribution_comparison(
-                train_dist_all,
-                gen_dist_all,
-                title=f"Overall Note Distribution - {model_name}",
-                save_path=os.path.join(results_dir, f"overall_distribution_{model_id}.png")
-            )
-        
-        # Plot bass distribution
-        if train_dist_bass and gen_dist_bass:
-            plot_distribution_comparison(
-                train_dist_bass,
-                gen_dist_bass,
-                title=f"Bass Voice Note Distribution - {model_name}",
-                save_path=os.path.join(results_dir, f"bass_distribution_{model_id}.png")
-            )
+    training_dist_all = calculate_note_distribution(training_data, is_training=True)
+    training_dist_bass = calculate_note_distribution(training_data, voice='bass', is_training=True)
+
+    # Load generated results
+    print("\nLoading generated results...")
+    try:
+        with open("OUTPUT/satb_predictions.json", 'r') as f:
+            generated_data = json.load(f)
+            print(f"Loaded {len(generated_data)} sequences from predictions")
+    except FileNotFoundError:
+        print("Error: Could not find predictions file")
+        return
+
+    # Calculate generated distributions
+    generated_dist_all = calculate_note_distribution(generated_data)
+    generated_dist_bass = calculate_note_distribution(generated_data, voice='bass')
+
+    # Plot comparisons
+    plot_distribution_comparison(
+        training_dist_all,
+        generated_dist_all,
+        'Note Distribution Comparison (All Voices)',
+        'evaluation_results/overall_distribution.png'
+    )
+
+    plot_distribution_comparison(
+        training_dist_bass,
+        generated_dist_bass,
+        'Note Distribution Comparison (Bass Voice)',
+        'evaluation_results/bass_distribution.png'
+    )
+
+    print("\nEvaluation complete. Results saved in evaluation_results directory.")
 
 if __name__ == "__main__":
     main() 
