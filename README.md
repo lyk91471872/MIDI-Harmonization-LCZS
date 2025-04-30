@@ -1,9 +1,5 @@
 # MIDI Harmonization LCZS
-this is readme~
 
-## some subtitle
-* some key point
-> some quote
 
 # This is Junhan Cui
     my role in this team is building a dual model training setup, and training it with small dataset, compare the performance between models and w & wo penalty.
@@ -135,3 +131,17 @@ Run your code at Terminal
 -Run "Inference.py" to predict, be careful about your dataset path.
 4. Evaluation:
 -Run "eval.py" to evaluate your model, you will get Top1 and Top5 score to see how the ATB parts perform.
+
+# Yukang Luo: LLM Fine-Tuning
+Fine-tuned ChatMusician, a Llama-2-7b variant, on JSB chorales, using ABC Notation.
+
+## File Structure
+See (chat_musician_fine_tuning/README.md)[chat_musician_fine_tuning/README.md] for details.
+
+## Progress
+### Completed
+* Fine-tuning with LoRA using PEFT.
+
+### Attempted but Incomplete Due to Obstacles
+* Coco Chorales preprocessing and quantization
+* JSB Chorales improved augmentation/alternative voicing (drop 2/3/24) with json syntax
