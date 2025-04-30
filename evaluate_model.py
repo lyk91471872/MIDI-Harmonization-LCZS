@@ -126,15 +126,14 @@ def calculate_note_distribution(data: List[Any], voice: str = None, is_training:
                     for midi_number in chord:
                         distribution[midi_number] = distribution.get(midi_number, 0) + 1
     else:
-        # Generated data format: List[Dict] with 'notes' field containing voice information
-        for item in data:
-            notes = item['notes']
-            if voice:
-                # Filter notes for the specified voice
-                notes = [note for note in notes if note['voice'] == voice]
-            for note in notes:
-                midi_number = note['midi_number']
+        # Generated data format: List[List[int]] where each list is [soprano, alto, tenor, bass]
+        for chord in data:
+            if voice == 'bass':
+                midi_number = chord[-1]  # Last note is bass
                 distribution[midi_number] = distribution.get(midi_number, 0) + 1
+            else:  # All voices
+                for midi_number in chord:
+                    distribution[midi_number] = distribution.get(midi_number, 0) + 1
     
     return distribution
 
@@ -171,6 +170,7 @@ def plot_distribution_comparison(
 
     plt.figure(figsize=(15, 6))
     width = 0.35
+    x = np.arange(len(all_pitches))
 
     plt.bar(x - width/2, training_values, width, label='Training Data')
     plt.bar(x + width/2, generated_values, width, label='Generated Data')
@@ -180,11 +180,9 @@ def plot_distribution_comparison(
     plt.title(title)
     plt.xticks(x, all_pitches, rotation=45)
     plt.legend()
-    plt.xticks(x, pitch_names, rotation=45)
     
-    if save_path:
-        plt.savefig(save_path, bbox_inches='tight')
-        print(f"Saved plot to {save_path}")
+    plt.savefig(output_path, bbox_inches='tight')
+    print(f"Saved plot to {output_path}")
     plt.close()
 
 def test_midi_to_pitch():
@@ -216,23 +214,13 @@ def main():
     training_data_path = "atb_parts.json"  # Path to training data
     results_dir = "evaluation_results"
     
-    # List of model variants to evaluate
-    model_variants = [
-        ("lstm_nopen_1", "LSTM (No Penalty) v1"),
-        ("lstm_nopen_2", "LSTM (No Penalty) v2"),
-        ("lstm_nopen_3", "LSTM (No Penalty) v3"),
-        ("lstm_pen_1", "LSTM (With Penalty) v1"),
-        ("lstm_pen_2", "LSTM (With Penalty) v2"),
-        ("lstm_pen_3", "LSTM (With Penalty) v3"),
-        ("transformer_nopen_1", "Transformer (No Penalty) v1"),
-        ("transformer_nopen_2", "Transformer (No Penalty) v2"),
-        ("transformer_nopen_3", "Transformer (No Penalty) v3"),
-        ("transformer_pen_1", "Transformer (With Penalty) v1"),
-        ("transformer_pen_2", "Transformer (With Penalty) v2"),
-        ("transformer_pen_3", "Transformer (With Penalty) v3")
+    # Best performing models from each category based on saved models
+    best_models = [
+        ("lstm_best", "LSTM (No Penalty)"),  # Using lstm_harmonizer_best.pt
+        ("transformer_best", "Transformer (No Penalty)")  # Using transformer_harmonizer_best.pt
     ]
     
-    print("Starting evaluation...")
+    print("Starting evaluation of best models...")
     print(f"Training data path: {training_data_path}")
     
     # Create results directory
@@ -277,34 +265,37 @@ def main():
     training_dist_all = calculate_note_distribution(training_data, is_training=True)
     training_dist_bass = calculate_note_distribution(training_data, voice='bass', is_training=True)
 
-    # Load generated results
-    print("\nLoading generated results...")
-    try:
-        with open("OUTPUT/satb_predictions.json", 'r') as f:
-            generated_data = json.load(f)
-            print(f"Loaded {len(generated_data)} sequences from predictions")
-    except FileNotFoundError:
-        print("Error: Could not find predictions file")
-        return
+    # Evaluate each best model
+    for model_id, model_name in best_models:
+        print(f"\nEvaluating {model_name}...")
+        
+        # Load generated results
+        try:
+            with open(f"OUTPUT/satb_predictions_{model_id}.json", 'r') as f:
+                generated_data = json.load(f)
+                print(f"Loaded {len(generated_data)} sequences from predictions")
+        except FileNotFoundError:
+            print(f"Warning: Could not find predictions file for {model_name}")
+            continue
 
-    # Calculate generated distributions
-    generated_dist_all = calculate_note_distribution(generated_data)
-    generated_dist_bass = calculate_note_distribution(generated_data, voice='bass')
+        # Calculate generated distributions
+        generated_dist_all = calculate_note_distribution(generated_data)
+        generated_dist_bass = calculate_note_distribution(generated_data, voice='bass')
 
-    # Plot comparisons
-    plot_distribution_comparison(
-        training_dist_all,
-        generated_dist_all,
-        'Note Distribution Comparison (All Voices)',
-        'evaluation_results/overall_distribution.png'
-    )
+        # Plot comparisons
+        plot_distribution_comparison(
+            training_dist_all,
+            generated_dist_all,
+            f'Note Distribution Comparison - {model_name} (All Voices)',
+            f'evaluation_results/overall_distribution_{model_id}.png'
+        )
 
-    plot_distribution_comparison(
-        training_dist_bass,
-        generated_dist_bass,
-        'Note Distribution Comparison (Bass Voice)',
-        'evaluation_results/bass_distribution.png'
-    )
+        plot_distribution_comparison(
+            training_dist_bass,
+            generated_dist_bass,
+            f'Note Distribution Comparison - {model_name} (Bass Voice)',
+            f'evaluation_results/bass_distribution_{model_id}.png'
+        )
 
     print("\nEvaluation complete. Results saved in evaluation_results directory.")
 

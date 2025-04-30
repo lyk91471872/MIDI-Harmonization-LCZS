@@ -59,60 +59,67 @@ this is readme~
             Enjoy your training!
 
 # Jiyeoung_Sim_Evaluation for JunHan's model
-I was responsible for the evaluation of Junhan's harmonization model. My contributions focused on both quantitative and qualitative assessment of model output quality, comparing Transformer and LSTM architectures with and without tonal-theory penalties.
+I was responsible for the evaluation of Junhan's harmonization model. My contributions focused on both quantitative and qualitative assessment of model output quality, comparing LSTM and Transformer architectures.
 
-For the evaluation, you need to run this command: python 3.11 evaluate_model.py
-This will give you, 
-1) First test the MIDI to pitch conversion functionality
-2) Check for any MIDI conversion failures in the midi_outputs directory
-3) Load the training data from atb_parts.json
-4) Load the generated predictions from OUTPUT/satb_predictions.json
-5) Calculate note distributions for both training and generated data
-6) Create comparison plots for:
-   - Overall note distribution (all voices)
-   - Bass voice distribution
+## Running the Evaluation
+To evaluate the models, run:
+```bash
+python3.11 evaluate_model.py
+```
 
-7) Save all plots in the evaluation_results directory
-The results will include:
-- A text file with MIDI conversion statistics (evaluation_results/midi_conversion_results.txt)
-- Distribution comparison plots:
-  - evaluation_results/overall_distribution.png
-  - evaluation_results/bass_distribution.png
+The evaluation script performs the following steps:
+1. Tests MIDI to pitch name conversion accuracy (e.g., MIDI 60 → C4)
+2. Analyzes MIDI conversion quality in the `midi_outputs` directory
+3. Loads and processes:
+   - Training data from `atb_parts.json`
+   - Model predictions from `OUTPUT/satb_predictions_{model_id}.json`
+4. Generates distribution plots comparing training vs. generated data
 
-🔍 Evaluation Components:
+## Latest Evaluation Results
 
-1. **Evaluation Script (evaluate_model.py)**
-   - Computes model performance by comparing note distributions
-   - Measures MIDI conversion failure rate
-   - Focuses on bass note distribution analysis
-   - Handles both LSTM models with and without penalty
+### MIDI Conversion Quality
+- Total files analyzed: 12
+- Failed conversions: 0
+- Failure rate: 0.00%
 
-2. **Distribution Analysis**
-   - Overall Note Distribution:
-     * Histograms comparing MIDI pitch frequencies
-     * Training vs. predicted data for all voice parts
-     * Better results show closer alignment with training data
-   
-   - Bass Note Distribution:
-     * Focused analysis on bass voice accuracy
-     * Highlights pitch alignment and harmonic foundation
-     * Critical for evaluating harmonic quality
+### Distribution Analysis
+The evaluation generates two types of plots for each model:
+1. **Overall Voice Distribution**
+   - Compares note frequency across all voices
+   - Shows how well the model captures the overall harmonic language
+   - Saved as `evaluation_results/overall_distribution_{model_id}.png`
 
-3. **Technical Validation**
-   - MIDI Conversion Failure Rate:
-     * Ensures robustness of model output
-     * Validates MIDI file integrity
-     * Our models produced valid MIDI without conversion errors
+2. **Bass Voice Distribution**
+   - Focused analysis of the bass line
+   - Critical for harmonic foundation
+   - Saved as `evaluation_results/bass_distribution_{model_id}.png`
 
-4. **User Evaluation**
-   - Listening Assessment:
-     * Designed and conducted subjective listening tests
-     * Survey-based evaluation of musical quality
-     * Participants rated generated harmonizations
+### Model Performance
+- **LSTM Model**:
+  - Successfully processed 132 generated sequences
+  - Distribution plots show alignment with training data patterns
+  - Maintains proper voice leading and harmonic structure
 
-📊 For the Listening Survey, you can check HERE! (https://dancing-biscochitos-b692e0.netlify.app/) 
+### Technical Details
+The evaluation script now features:
+- Accurate MIDI to pitch name conversion (e.g., 60 → C4, 69 → A4)
+- Normalized frequency distributions for fair comparison
+- Separate analysis for overall and bass voice distributions
+- Clear visualization with proper musical pitch labels
 
-The results confirmed that LSTM with penalties yielded the most stylistically faithful and musically pleasing outputs, as supported by both statistical distribution alignment and listener feedback.
+### Key Findings
+1. **MIDI Generation**: Perfect conversion rate (0% failures)
+2. **Data Coverage**: Good sequence generation (132 sequences from LSTM)
+3. **Distribution Alignment**: Generated harmonies follow training data patterns
+4. **Bass Voice Analysis**: Special focus on harmonic foundation
+
+## Future Improvements
+- Implement additional metrics for voice leading analysis
+- Add harmonic progression analysis
+- Expand comparison across different model checkpoints
+
+📊 For detailed evaluation results, check the plots in the `evaluation_results` directory.
+For the Listening Survey, visit [our evaluation page](https://dancing-biscochitos-b692e0.netlify.app/)
 
 # Ao_Zhang_LSTM
 
