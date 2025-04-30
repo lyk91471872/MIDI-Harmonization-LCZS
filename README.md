@@ -117,6 +117,7 @@ The evaluation script now features:
 - Implement additional metrics for voice leading analysis
 - Add harmonic progression analysis
 - Expand comparison across different model checkpoints
+- Data augmentation and better penalty design for the model in general.
 
 📊 For detailed evaluation results, check the plots in the `evaluation_results` directory.
 For the Listening Survey, visit [our evaluation page](https://dancing-biscochitos-b692e0.netlify.app/)
