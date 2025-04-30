@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import os
+import sys
 import json
 import random
 import shutil
@@ -18,8 +19,8 @@ from music21 import note, stream
 ##############################
 # Configuration and Paths
 ##############################
-INPUT_FOLDER = "/Users/cui/Documents/GitHub/MIDI-Harmonization-LCZS/soprano_paragraphs"
-OUTPUT_FOLDER = "/Users/cui/Documents/GitHub/MIDI-Harmonization-LCZS/atb_paragraphs"
+INPUT_FOLDER = "/Users/cui/Documents/GitHub/MIDI-Harmonization-LCZS/Junhan Cui/soprano_paragraphs"
+OUTPUT_FOLDER = "/Users/cui/Documents/GitHub/MIDI-Harmonization-LCZS/Junhan Cui/atb_paragraphs"
 MIDI_OUTPUT_FOLDER = "midi_outputs"
 os.makedirs(MIDI_OUTPUT_FOLDER, exist_ok=True)
 # Folder for predictions (.json) and generated sample MIDI
@@ -928,7 +929,13 @@ def create_dataloaders(dataset, batch_size=1, test_ratio=0.05, val_ratio=0.20):
     test_size = int(test_ratio * total_size)
     val_size = int(val_ratio * total_size)
     train_size = total_size - val_size - test_size
-    train_ds, val_ds, test_ds = random_split(dataset, [train_size, val_size, test_size])
+    # Use fixed seed for reproducible train/val/test split
+    gen = torch.Generator().manual_seed(42)
+    train_ds, val_ds, test_ds = random_split(
+        dataset,
+        [train_size, val_size, test_size],
+        generator=gen
+    )
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
@@ -962,7 +969,48 @@ if __name__ == "__main__":
     # --------------------------------------------------------
     # Model selection (interactive prompt)
     # --------------------------------------------------------
-    arch_choice = input("Select architecture – [T]ransformer or [L]STM  (default=T): ").strip().upper() or "T"
+    arch_choice = input("Select architecture – [T]ransformer, [L]STM, or [A]ll in all  (default=T): ").strip().upper() or "T"
+    # If user wants to run all configurations in sequence:
+    if arch_choice.startswith("A"):
+        EPOCHS_RUN = 50
+        for choice, build_fn in [("Transformer", build_model), ("LSTM", build_model_lstm)]:
+            for use_penalties in [True, False]:
+                model_name = choice
+                model, optimizer, criterion = build_fn()
+                broadcast_hyperparams(model_name)
+                print(f"Penalties {'enabled' if use_penalties else 'disabled'}.\n")
+                # Train
+                train_model(
+                    model, train_loader, val_loader, optimizer, criterion,
+                    num_epochs=EPOCHS_RUN, teacher_forcing_ratio=0.3,
+                    model_name=model_name, apply_penalty=use_penalties
+                )
+                # Save checkpoint
+                ckpt_path = os.path.join(
+                    MODEL_OUTPUT_FOLDER,
+                    f"{model_name.lower()}_harmonizer_epoch{EPOCHS_RUN}.pt"
+                )
+                save_checkpoint(model, optimizer, epoch=EPOCHS_RUN, path=ckpt_path)
+                # Evaluate
+                evaluate_model(model, val_loader, criterion)
+                # Predict and save JSONs
+                penalty_tag = "pen" if use_penalties else "nopen"
+                pred_prefix = os.path.join(
+                    PRED_OUTPUT_FOLDER,
+                    f"satb_predictions_{model_name.lower()}_{penalty_tag}"
+                )
+                json_paths = generate_predictions(model, test_loader, pred_prefix)
+                # Convert JSONs to MIDI
+                for idx, jp in enumerate(json_paths, start=1):
+                    with open(jp, "r") as jf:
+                        sample_satb = json.load(jf)
+                    midi_out = os.path.join(
+                        PRED_OUTPUT_FOLDER,
+                        f"satb_{model_name.lower()}_{penalty_tag}_{idx}.mid"
+                    )
+                    convert_satb_to_midi(sample_satb, out_midi_path=midi_out)
+        sys.exit(0)
+
     if arch_choice == "L":
         model_name = "LSTM"
         model, optimizer, criterion = build_model_lstm()
