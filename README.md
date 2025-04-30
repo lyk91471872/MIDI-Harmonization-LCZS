@@ -59,7 +59,8 @@ this is readme~
             Enjoy your training!
 
 # Jiyeoung_Sim_Evaluation for JunHan's model
-I was responsible for the evaluation of Junhan’s harmonization model. My contributions focused on both quantitative and qualitative assessment of model output quality, comparing Transformer and LSTM architectures with and without tonal-theory penalties.
+I was responsible for the evaluation of Junhan's harmonization model. My contributions focused on both quantitative and qualitative assessment of model output quality, comparing Transformer and LSTM architectures with and without tonal-theory penalties.
+
 For the evaluation, you need to run this command: python 3.11 evaluate_model.py
 This will give you, 
 1) First test the MIDI to pitch conversion functionality
@@ -68,23 +69,48 @@ This will give you,
 4) Load the generated predictions from OUTPUT/satb_predictions.json
 5) Calculate note distributions for both training and generated data
 6) Create comparison plots for:
-- Overall note distribution (all voices)
-- Bass voice distribution
+   - Overall note distribution (all voices)
+   - Bass voice distribution
 
 7) Save all plots in the evaluation_results directory
 The results will include:
 - A text file with MIDI conversion statistics (evaluation_results/midi_conversion_results.txt)
-- Three distribution comparison plots:
-- evaluation_results/overall_distribution.png
-- evaluation_results/bass_distribution.png
+- Distribution comparison plots:
+  - evaluation_results/overall_distribution.png
+  - evaluation_results/bass_distribution.png
 
 🔍 Evaluation Components:
-	•	evaluation_model.py: This script computes model performance by comparing the note distribution of predicted ATB voices to the training set and measuring MIDI conversion failure rate. Further, it allows you to compare the bass note distribution with the training data, which is the most important voice in 4-voices harmony composition, about the LSTM model with and without penalty,
-	•	Overall Note Distribution Analysis: Histograms comparing the frequency of MIDI pitches in the training data versus predicted data for all voice parts. More it resembles the training data, better the result.
-	•	Bass Note Distribution: A focused analysis on bass voice accuracy, highlighting pitch alignment.
-	•	MIDI Conversion Failure Rate: Ensured robustness of model output; Our models produced valid MIDI without conversion errors.
-	•	Listening Assessment: Designed and conducted a subjective listening test using a survey. Participants rated the musical quality of generated harmonizations. 
-  📊 For the Listening Survey, you can check HERE! (https://dancing-biscochitos-b692e0.netlify.app/) 
+
+1. **Evaluation Script (evaluate_model.py)**
+   - Computes model performance by comparing note distributions
+   - Measures MIDI conversion failure rate
+   - Focuses on bass note distribution analysis
+   - Handles both LSTM models with and without penalty
+
+2. **Distribution Analysis**
+   - Overall Note Distribution:
+     * Histograms comparing MIDI pitch frequencies
+     * Training vs. predicted data for all voice parts
+     * Better results show closer alignment with training data
+   
+   - Bass Note Distribution:
+     * Focused analysis on bass voice accuracy
+     * Highlights pitch alignment and harmonic foundation
+     * Critical for evaluating harmonic quality
+
+3. **Technical Validation**
+   - MIDI Conversion Failure Rate:
+     * Ensures robustness of model output
+     * Validates MIDI file integrity
+     * Our models produced valid MIDI without conversion errors
+
+4. **User Evaluation**
+   - Listening Assessment:
+     * Designed and conducted subjective listening tests
+     * Survey-based evaluation of musical quality
+     * Participants rated generated harmonizations
+
+📊 For the Listening Survey, you can check HERE! (https://dancing-biscochitos-b692e0.netlify.app/) 
 
 The results confirmed that LSTM with penalties yielded the most stylistically faithful and musically pleasing outputs, as supported by both statistical distribution alignment and listener feedback.
 
