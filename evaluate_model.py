@@ -48,12 +48,12 @@ def count_midi_failures(output_dir: str) -> Tuple[int, int, float]:
     failure_percentage = (failed_files / total_files * 100) if total_files > 0 else 0
     return total_files, failed_files, failure_percentage
 
-def get_note_distribution(data: List[List[List[int]]], voice_idx: int = None, is_atb: bool = False) -> Dict[int, float]:
+def get_note_distribution(data: List[List[int]] | List[List[List[int]]], voice_idx: int = None, is_atb: bool = False) -> Dict[int, float]:
     """
     Calculate the distribution of notes in the dataset.
     
     Args:
-        data: List of sequences, where each sequence is a list of chords, and each chord is a list of [S,A,T,B] or [A,T,B] notes
+        data: List of sequences or a single sequence, where each sequence/chord is either [S,A,T,B] or [A,T,B]
         voice_idx: If provided, only analyze specific voice (0=S/A, 1=A/T, 2=T/B, 3=B)
         is_atb: Whether the data is in ATB format (True) or SATB format (False)
     
@@ -63,9 +63,13 @@ def get_note_distribution(data: List[List[List[int]]], voice_idx: int = None, is
     if not data:
         print("Warning: Empty data provided to get_note_distribution")
         return {}
+    
+    # Check if data is a single sequence or list of sequences
+    is_single_sequence = all(isinstance(x, int) for x in data[0])
+    sequences = [data] if is_single_sequence else data
         
     notes = []
-    for sequence in data:
+    for sequence in sequences:
         for chord in sequence:
             if voice_idx is not None:
                 # Adjust voice index for ATB format
@@ -79,10 +83,10 @@ def get_note_distribution(data: List[List[List[int]]], voice_idx: int = None, is
                         adjusted_idx = 2
                     elif voice_idx == 3:  # Bass
                         adjusted_idx = 2  # Bass is the third voice in ATB format
-                if adjusted_idx < len(chord):
+                
+                # Get the note if the index is valid
+                if adjusted_idx < (3 if is_atb else 4):
                     notes.append(chord[adjusted_idx])
-                else:
-                    print(f"Warning: Voice index {adjusted_idx} out of range for chord {chord}")
             else:
                 notes.extend(chord)
     
@@ -140,14 +144,10 @@ def plot_distribution_comparison(train_dist: Dict[int, float],
 def main():
     # Paths
     output_dir = "midi_outputs"  # Directory containing generated MIDI files
-    training_data_path = "atb_parts.json"  # Path to training data
-    generated_data_path = "OUTPUT/satb_predictions.json"  # Path to generated SATB predictions
     results_dir = "evaluation_results"
     
-    print("Starting evaluation...")
+    print("Starting MIDI conversion evaluation...")
     print(f"Output directory: {output_dir}")
-    print(f"Training data path: {training_data_path}")
-    print(f"Generated data path: {generated_data_path}")
     
     # Create results directory
     try:
@@ -157,7 +157,7 @@ def main():
         print(f"Error creating results directory: {str(e)}")
         return
     
-    # 1. Evaluate MIDI conversion failures
+    # Evaluate MIDI conversion failures
     print("\nChecking MIDI files...")
     total, failed, failure_rate = count_midi_failures(output_dir)
     print(f"\nMIDI Conversion Results:")
@@ -165,64 +165,16 @@ def main():
     print(f"Failed files: {failed}")
     print(f"Failure rate: {failure_rate:.2f}%")
     
-    # 2. Compare note distributions
-    print("\nLoading training data...")
-    try:
-        with open(training_data_path, 'r') as f:
-            training_data = json.load(f)
-        print(f"Loaded training data with {len(training_data)} sequences")
-    except Exception as e:
-        print(f"Error loading training data: {str(e)}")
-        return
+    # Save results to a text file
+    results_file = os.path.join(results_dir, "midi_conversion_results.txt")
+    with open(results_file, 'w') as f:
+        f.write("MIDI Conversion Evaluation Results\n")
+        f.write("================================\n\n")
+        f.write(f"Total files analyzed: {total}\n")
+        f.write(f"Failed files: {failed}\n")
+        f.write(f"Failure rate: {failure_rate:.2f}%\n")
     
-    # Load generated results
-    print("\nLoading generated results...")
-    try:
-        with open(generated_data_path, 'r') as f:
-            generated_data = json.load(f)
-        print(f"Loaded {len(generated_data)} sequences")
-    except Exception as e:
-        print(f"Error loading generated results: {str(e)}")
-        return
-    
-    if not generated_data:
-        print("Warning: No generated data found")
-        return
-    
-    # Calculate distributions
-    print("\nCalculating distributions...")
-    voice_names = ['Soprano', 'Alto', 'Tenor', 'Bass']
-    for i in range(4):  # For each voice
-        print(f"\nProcessing {voice_names[i]} voice...")
-        train_dist = get_note_distribution(training_data, i, is_atb=True)
-        gen_dist = get_note_distribution(generated_data, i, is_atb=False)
-        
-        if not train_dist or not gen_dist:
-            print(f"Warning: No data found for {voice_names[i]} voice")
-            continue
-        
-        # Plot comparison
-        plot_distribution_comparison(
-            train_dist,
-            gen_dist,
-            title=f"{voice_names[i]} Voice Note Distribution",
-            save_path=os.path.join(results_dir, f"{voice_names[i].lower()}_distribution.png")
-        )
-    
-    # Also plot overall distribution
-    print("\nCalculating overall distribution...")
-    train_dist_all = get_note_distribution(training_data, is_atb=True)
-    gen_dist_all = get_note_distribution(generated_data, is_atb=False)
-    
-    if train_dist_all and gen_dist_all:
-        plot_distribution_comparison(
-            train_dist_all,
-            gen_dist_all,
-            title="Overall Note Distribution",
-            save_path=os.path.join(results_dir, "overall_distribution.png")
-        )
-    else:
-        print("Warning: No data found for overall distribution")
+    print(f"\nResults saved to {results_file}")
 
 if __name__ == "__main__":
     main() 
