@@ -37,10 +37,10 @@ pip install -r requirements.txt
 ```bash
 python fine_tune_lora.py
 ```
-> Be aware that the pretrained weights is quite large.
+> Be aware that the pretrained weights are quite large. Make sure you have at least 16 GB of free disk space for the FP16 model.
 
 ## Generation
 ```bash
 python inference_lora.py
 ```
-> Modify 
+> Modify the melody/prompt inside the script.
