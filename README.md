@@ -136,7 +136,7 @@ Run your code at Terminal
 Fine-tuned ChatMusician, a Llama-2-7b variant, on JSB chorales, using ABC Notation.
 
 ## File Structure
-See [(chat_musician_fine_tuning/README.md)[chat_musician_fine_tuning/README.md]](https://github.com/lyk91471872/MIDI-Harmonization-LCZS/blob/main/chat_musician_fine_tuning/README.md) for details.
+See (chat_musician_fine_tuning/README.md)[https://github.com/lyk91471872/MIDI-Harmonization-LCZS/blob/main/chat_musician_fine_tuning/README.md] for details.
 
 ## Progress
 ### Completed
