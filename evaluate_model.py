@@ -97,7 +97,7 @@ def get_note_distribution(data: List[List[List[int]]], voice_idx: int = None, is
     # Convert to percentages
     return {note: count/total * 100 for note, count in counter.items()}
 
-def plot_distribution_comparison(train_dist: Dict[int, float], 
+def plot_distribution_comparison(train_dist: Dict[int, float],
                                gen_dist: Dict[int, float],
                                title: str = "Note Distribution Comparison",
                                save_path: str = None):
@@ -203,7 +203,7 @@ def main():
         
         # Plot comparison
         plot_distribution_comparison(
-            train_dist, 
+            train_dist,
             gen_dist,
             title=f"{voice_names[i]} Voice Note Distribution",
             save_path=os.path.join(results_dir, f"{voice_names[i].lower()}_distribution.png")
